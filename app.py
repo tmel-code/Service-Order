@@ -8,174 +8,182 @@ st.set_page_config(page_title="Service Order Tracker", page_icon="📦", layout=
 st.markdown("""
     <style>
     .stAlert { padding: 10px; border-radius: 5px; }
-    .status-waiting { color: #d9534f; font-weight: bold; } 
-    .status-payment { color: #f0ad4e; font-weight: bold; } 
-    .status-ready { color: #5cb85c; font-weight: bold; } 
+    .status-stalled { background-color: #ffcccc; color: #a94442; }
+    .status-new { background-color: #dff0d8; color: #3c763d; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- TITLE ---
 st.title("📦 Logistics & Service Order Tracker")
-st.markdown("Upload your **Infor LN Export** to generate the daily summary.")
 
 # --- LOGIC FUNCTIONS ---
 def classify_order_status(group):
-    """
-    Analyzes all lines in a Service Order to determine the Overall Status.
-    """
-    # 1. Calculate Shortages for this specific order
+    # 1. Calculate Shortages
     group['Shortage'] = (group['ReqQty'] - group['ActQty']).clip(lower=0)
     
-    # 2. Separate Physical Parts from Billing/Service Items
+    # 2. Identify Billing items
     def is_billing(desc):
         d = str(desc).upper()
         return any(x in d for x in ['BILLING', 'PAYMENT', 'DEPOSIT', 'FEE'])
-
     group['Type'] = group['ItemDescription'].apply(lambda x: 'Billing' if is_billing(x) else 'Part')
 
     # 3. Check for Shortages
     missing_parts = group[(group['Type'] == 'Part') & (group['Shortage'] > 0)]
     missing_payment = group[(group['Type'] == 'Billing') & (group['Shortage'] > 0)]
 
-    # 4. Determine Status Hierarchy
+    # 4. Status Hierarchy
     if not missing_parts.empty:
-        status = "🔴 Waiting for Parts"
+        status = "Waiting for Parts"
         items = missing_parts['ItemDescription'].unique()
         summary = f"Missing: {', '.join(items[:2])}"
         if len(items) > 2: summary += ", ..."
         priority = 1
-        
     elif not missing_payment.empty:
-        status = "🟠 Pending Payment"
-        summary = "Service Order generated. Waiting for payment/billing."
+        status = "Pending Payment"
+        summary = "Waiting for payment"
         priority = 2
-        
     else:
-        status = "✅ Ready"
-        summary = "All parts allocated & Payment cleared"
+        status = "Ready"
+        summary = "All allocated"
         priority = 3
 
     return pd.Series({
         'Customer': group['OwnerName'].iloc[0],
-        'Jobsite': group['Jobsite'].iloc[0],
         'Branch': group['Branch'].iloc[0],
-        'Manager': group['Manager'].iloc[0],  # Added Manager Column
-        'Overall_Status': status,
+        'Manager': group['Manager'].iloc[0],
+        'Infor_Status': group['SOStatus'].iloc[0], # Keep original Infor Status
+        'Calc_Status': status,                     # Our calculated status
         'Summary': summary,
-        'Priority': priority,
-        'Date': group['OrderDate'].iloc[0]
+        'Priority': priority
     })
 
-# --- MAIN APP LOGIC ---
+def load_data(uploaded_file):
+    if uploaded_file.name.endswith('.csv'):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
+    
+    df = df.dropna(subset=['ServiceOrder'])
+    for col in ['ReqQty', 'ActQty']:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    return df
 
-# 1. File Uploader First
-uploaded_file = st.file_uploader("Drop your Infor LN Excel/CSV file here", type=['csv', 'xls', 'xlsx'])
+# --- SIDEBAR CONTROLS ---
+with st.sidebar:
+    st.header("📂 Data Upload")
+    file_current = st.file_uploader("1. Upload TODAY'S File (Required)", type=['csv', 'xls', 'xlsx'])
+    
+    st.divider()
+    
+    st.header("📊 Compare Mode")
+    enable_history = st.checkbox("Enable Weekly Comparison")
+    file_history = None
+    if enable_history:
+        file_history = st.file_uploader("2. Upload LAST WEEK'S File", type=['csv', 'xls', 'xlsx'])
 
-if uploaded_file is not None:
+# --- MAIN LOGIC ---
+
+if file_current is not None:
     try:
-        # Load the file
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
-
-        # Basic Cleanup
-        df = df.dropna(subset=['ServiceOrder'])
+        # Process Current Data
+        df_curr = load_data(file_current)
         
-        # Ensure numeric columns
-        cols_to_clean = ['ReqQty', 'ActQty']
-        for col in cols_to_clean:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
-        # --- DYNAMIC FILTERS (NEW!) ---
-        # We put this sidebar logic AFTER loading the file, 
-        # so we can scan the file to find the actual Names.
-        
+        # --- FILTERS (NEW!) ---
         with st.sidebar:
             st.header("🔍 Filters")
             
-            # 1. Branch Filter (Auto-detected)
-            # We get unique branches from the file, sort them, and add "ALL"
-            available_branches = ["ALL"] + sorted(df['Branch'].astype(str).unique().tolist())
-            selected_branch = st.selectbox("Filter by Branch:", available_branches)
-
-            # 2. Manager Filter (Auto-detected)
-            # We get unique managers from the file
-            available_managers = ["ALL"] + sorted(df['Manager'].astype(str).unique().tolist())
-            selected_manager = st.selectbox("Filter by Manager:", available_managers)
+            # 1. Branch Filter
+            branches = ["ALL"] + sorted(df_curr['Branch'].astype(str).unique().tolist())
+            sel_branch = st.selectbox("Branch:", branches)
             
-            st.divider()
-            st.info("Filters update the dashboard automatically.")
-
+            # 2. Manager Filter
+            managers = ["ALL"] + sorted(df_curr['Manager'].astype(str).unique().tolist())
+            sel_manager = st.selectbox("Manager:", managers)
+            
+            # 3. SO Status Filter (New!)
+            # We get all unique statuses (Costed, Released, Free, etc.)
+            all_statuses = sorted(df_curr['SOStatus'].astype(str).unique().tolist())
+            sel_status = st.multiselect(
+                "Infor SO Status:", 
+                options=all_statuses,
+                default=all_statuses # Select all by default
+            )
+            
         # --- APPLY FILTERS ---
-        # Filter 1: Branch
-        if selected_branch != "ALL":
-            df = df[df['Branch'].astype(str) == selected_branch]
+        if sel_branch != "ALL": 
+            df_curr = df_curr[df_curr['Branch'].astype(str) == sel_branch]
+        if sel_manager != "ALL": 
+            df_curr = df_curr[df_curr['Manager'].astype(str) == sel_manager]
             
-        # Filter 2: Manager
-        if selected_manager != "ALL":
-            df = df[df['Manager'].astype(str) == selected_manager]
+        # Filter by the Multi-Select Box
+        if sel_status:
+            df_curr = df_curr[df_curr['SOStatus'].isin(sel_status)]
 
-        # Check if data still exists after filtering
-        if df.empty:
+        # Aggregate Current
+        if df_curr.empty:
             st.warning("No orders found matching these filters.")
         else:
-            # --- AGGREGATE DATA ---
-            summary_df = df.groupby('ServiceOrder').apply(classify_order_status).reset_index()
-            summary_df = summary_df.sort_values(by=['Priority', 'ServiceOrder'])
+            summ_curr = df_curr.groupby('ServiceOrder').apply(classify_order_status).reset_index()
 
-            # --- DISPLAY METRICS ---
-            st.divider()
-            col1, col2, col3 = st.columns(3)
-            
-            waiting_count = len(summary_df[summary_df['Overall_Status'].astype(str).str.contains("Waiting")])
-            payment_count = len(summary_df[summary_df['Overall_Status'].astype(str).str.contains("Pending")])
-            ready_count = len(summary_df[summary_df['Overall_Status'].astype(str).str.contains("Ready")])
-            
-            col1.metric("🔴 Waiting for Parts", waiting_count)
-            col2.metric("🟠 Pending Payment", payment_count)
-            col3.metric("✅ Ready for Service", ready_count)
-
-            # --- DISPLAY TABLE ---
-            st.subheader(f"📋 Orders for {selected_manager if selected_manager != 'ALL' else 'All Managers'}")
-            
-            st.dataframe(
-                summary_df[['ServiceOrder', 'Customer', 'Overall_Status', 'Summary', 'Manager', 'Branch']],
-                use_container_width=True,
-                column_config={
-                    "ServiceOrder": "Order ID",
-                    "Overall_Status": "Status",
-                    "Summary": "Action Item",
-                },
-                hide_index=True
-            )
-
-            # --- DRILL DOWN ---
-            st.subheader("🔍 Drill Down Details")
-            
-            problem_orders = summary_df[summary_df['Priority'] < 3]['ServiceOrder'].tolist()
-            if not problem_orders:
-                st.success("🎉 No issues found! All orders are ready.")
-            
-            for order_id in problem_orders:
-                order_row = summary_df[summary_df['ServiceOrder'] == order_id].iloc[0]
+            # --- MODE 1: WEEKLY COMPARISON ---
+            if enable_history and file_history is not None:
+                st.subheader("🗓️ Weekly Progress Report")
+                df_hist = load_data(file_history)
+                summ_hist = df_hist.groupby('ServiceOrder').apply(classify_order_status).reset_index()
                 
-                with st.expander(f"**{order_id}** - {order_row['Customer']} ({order_row['Overall_Status']})"):
-                    details = df[df['ServiceOrder'] == order_id].copy()
-                    details['Shortage'] = (details['ReqQty'] - details['ActQty']).clip(lower=0)
-                    
-                    def highlight_missing(row):
-                        return ['background-color: #ffcccc'] * len(row) if row['Shortage'] > 0 else [''] * len(row)
+                merged = summ_curr.merge(summ_hist, on='ServiceOrder', how='left', suffixes=('', '_Old'))
+                
+                def get_trend(row):
+                    if pd.isna(row['Calc_Status_Old']): return "🌟 New Order"
+                    if "Waiting" in row['Calc_Status'] and "Waiting" in row['Calc_Status_Old']:
+                        return "⚠️ STALLED (Still Waiting)"
+                    if "Ready" in row['Calc_Status'] and "Waiting" in row['Calc_Status_Old']:
+                        return "✅ RESOLVED"
+                    return "No Change"
 
-                    display_cols = ['ItemCode', 'ItemDescription', 'ReqQty', 'ActQty', 'Shortage']
-                    st.table(details[display_cols].style.apply(highlight_missing, axis=1))
+                merged['Trend'] = merged.apply(get_trend, axis=1)
+                
+                # Show Stalled Orders
+                stalled = merged[merged['Trend'].str.contains("STALLED")]
+                if not stalled.empty:
+                    st.error(f"⚠️ {len(stalled)} Orders Stalled > 7 Days")
+                    st.dataframe(stalled[['ServiceOrder', 'Customer', 'Summary', 'Manager']], hide_index=True, use_container_width=True)
+                else:
+                    st.success("No stalled orders found!")
+
+            # --- MODE 2: DAILY SNAPSHOT ---
+            else:
+                st.subheader("📅 Daily Snapshot")
+                
+                # Metrics
+                waiting = len(summ_curr[summ_curr['Calc_Status'].str.contains("Waiting")])
+                ready = len(summ_curr[summ_curr['Calc_Status'].str.contains("Ready")])
+                
+                c1, c2 = st.columns(2)
+                c1.metric("Waiting for Parts", waiting)
+                c2.metric("Ready for Service", ready)
+                
+                # Main Table
+                # Added 'Infor_Status' to the view so you can see if it's Costed/Released
+                st.dataframe(
+                    summ_curr[['ServiceOrder', 'Customer', 'Calc_Status', 'Summary', 'Infor_Status', 'Manager']], 
+                    hide_index=True, 
+                    use_container_width=True
+                )
+                
+                # Drill Down
+                st.write("---")
+                st.subheader("🔍 Drill Down")
+                
+                issues = summ_curr[summ_curr['Calc_Status'].str.contains("Waiting") | summ_curr['Calc_Status'].str.contains("Pending")]
+                
+                for order_id in issues['ServiceOrder']:
+                    row = issues[issues['ServiceOrder'] == order_id].iloc[0]
+                    with st.expander(f"{order_id} - {row['Customer']} ({row['Calc_Status']})"):
+                        details = df_curr[df_curr['ServiceOrder'] == order_id]
+                        st.table(details[['ItemCode', 'ItemDescription', 'ReqQty', 'ActQty']])
 
     except Exception as e:
-        st.error(f"An error occurred: {e}")
-        st.write("Tip: Ensure your Excel file has columns: 'ServiceOrder', 'Manager', 'Branch', 'ReqQty', 'ActQty'")
+        st.error(f"Error: {e}")
 
 else:
-    # Sidebar placeholder when no file is uploaded
-    with st.sidebar:
-        st.header("User Settings")
-        st.info("👈 Upload a file to see filters.")
+    st.info("👈 Upload Today's File to start.")
