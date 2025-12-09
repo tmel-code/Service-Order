@@ -83,7 +83,6 @@ with st.sidebar:
     st.divider()
     st.header("2. Upload Data")
     
-    # Unique keys prevent the "disappearing button" bug
     if app_mode == "Daily Dashboard":
         file_curr = st.file_uploader("Upload Current Report", type=['csv', 'xls', 'xlsx'], key="daily_up")
         file_hist = None
@@ -100,6 +99,84 @@ if file_curr is not None:
         with st.sidebar:
             st.divider()
             st.header("3. Filter Data")
+            
+            # The line below was causing errors, so I split it up
             def get_opts(col):
-                vals = df[col].unique()
-                return sorted([str(x) for x in vals if pd
+                unique_vals = df[col].unique()
+                # Clean list comprehension
+                clean_list = [str(x) for x in unique_vals if pd.notna(x)]
+                return sorted(clean_list)
+
+            sel_branch = st.multiselect("Branch", get_opts('Branch'))
+            sel_mgr = st.multiselect("Manager", get_opts('Manager'))
+            sel_stat = st.multiselect("Infor Status", get_opts('SOStatus'))
+            sel_cust = st.multiselect("Customer", get_opts('OwnerName'))
+
+        # Apply Filters
+        if sel_branch: df = df[df['Branch'].astype(str).isin(sel_branch)]
+        if sel_mgr: df = df[df['Manager'].astype(str).isin(sel_mgr)]
+        if sel_stat: df = df[df['SOStatus'].astype(str).isin(sel_stat)]
+        if sel_cust: df = df[df['OwnerName'].astype(str).isin(sel_cust)]
+
+        if df.empty:
+            st.warning("No data matches filters.")
+        else:
+            if app_mode == "Daily Dashboard":
+                # Aggregate
+                summ_df = df.groupby('ServiceOrder').apply(classify_order_status).reset_index()
+                
+                # Metrics
+                tot_val = summ_df['Quotation_Value'].sum()
+                costed = summ_df[summ_df['Infor_Status']=='Costed']['Quotation_Value'].sum()
+                
+                st.markdown("### 💵 Financial Snapshot")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Value", f"${tot_val:,.2f}")
+                c2.metric("Costed", f"${costed:,.2f}")
+                c3.metric("In Progress", f"${(tot_val - costed):,.2f}")
+                
+                st.divider()
+                
+                # Ops Metrics
+                waiting = len(summ_df[summ_df['Calc_Status'].str.contains("Waiting")])
+                ready = len(summ_df[summ_df['Calc_Status'].str.contains("Ready")])
+                
+                st.markdown("### 📦 Operational Snapshot")
+                o1, o2 = st.columns(2)
+                o1.metric("🔴 Waiting", waiting)
+                o2.metric("✅ Ready", ready)
+                
+                # Table
+                st.dataframe(
+                    summ_df[['ServiceOrder', 'Customer', 'Infor_Status', 'Quotation_Value', 'Calc_Status', 'Manager']],
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+            elif app_mode == "Period Comparison" and file_hist is not None:
+                df_old = load_data(file_hist)
+                
+                curr_agg = df.groupby('ServiceOrder').agg({'SOStatus':'first', 'TotalSales':'max', 'OwnerName':'first'}).reset_index()
+                hist_agg = df_old.groupby('ServiceOrder').agg({'SOStatus':'first', 'TotalSales':'max'}).reset_index()
+                
+                merged = curr_agg.merge(hist_agg, on='ServiceOrder', how='inner', suffixes=('_New', '_Old'))
+                changes = merged[merged['SOStatus_New'] != merged['SOStatus_Old']].copy()
+                to_costed = changes[changes['SOStatus_New'].str.upper() == 'COSTED']
+                
+                st.subheader("📊 Comparison Report")
+                m1, m2 = st.columns(2)
+                m1.metric("Status Changes", len(changes))
+                m2.metric("Value to Costed", f"${to_costed['TotalSales_New'].sum():,.2f}")
+                
+                if not changes.empty:
+                    st.dataframe(changes[['ServiceOrder', 'OwnerName', 'SOStatus_Old', 'SOStatus_New', 'TotalSales_New']], use_container_width=True)
+                else:
+                    st.success("No changes found.")
+
+    except Exception as e:
+        st.error(f"Error: {e}")
+else:
+    if app_mode == "Period Comparison":
+        st.info("👈 Upload BOTH files.")
+    else:
+        st.info("👈 Upload file.")
