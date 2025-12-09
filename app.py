@@ -2,44 +2,44 @@ import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Service Order Tracker", page_icon="📦", layout="wide")
+st.set_page_config(page_title="Service Order Financial Tracker", page_icon="💰", layout="wide")
 
 # --- CSS FOR STYLING ---
 st.markdown("""
     <style>
     .stAlert { padding: 10px; border-radius: 5px; }
-    .status-money { color: #28a745; font-weight: bold; font-size: 1.2em; }
+    .big-money { font-size: 24px; font-weight: bold; color: #28a745; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📦 Logistics & Service Order Tracker")
+st.title("💰 Logistics & Financial Tracker")
 
-# --- DATA LOADING & CLEANING ---
+# --- DATA PROCESSING ---
+@st.cache_data
 def load_data(uploaded_file):
     if uploaded_file.name.endswith('.csv'):
         df = pd.read_csv(uploaded_file)
     else:
         df = pd.read_excel(uploaded_file)
     
-    # 1. Basic Filters
+    # 1. Clean Key Columns
     df = df.dropna(subset=['ServiceOrder'])
     
-    # 2. Clean Numeric Columns (Quantities)
-    for col in ['ReqQty', 'ActQty']:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        
-    # 3. Clean Financial Column (TotalSales)
-    # Remove currency symbols if present, then convert to float
+    # 2. Clean Financials (Remove currency symbols, commas)
     if 'TotalSales' in df.columns:
         df['TotalSales'] = df['TotalSales'].astype(str).str.replace(r'[^\d.-]', '', regex=True)
         df['TotalSales'] = pd.to_numeric(df['TotalSales'], errors='coerce').fillna(0)
     else:
         df['TotalSales'] = 0.0
+
+    # 3. Clean Quantities
+    for col in ['ReqQty', 'ActQty']:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
     return df
 
-# --- LOGIC: CLASSIFY STATUS (Daily Ops) ---
 def classify_order_status(group):
+    # Logic to determine if "Waiting" or "Ready"
     group['Shortage'] = (group['ReqQty'] - group['ActQty']).clip(lower=0)
     
     def is_billing(desc):
@@ -52,157 +52,131 @@ def classify_order_status(group):
 
     if not missing_parts.empty:
         status = "Waiting for Parts"
+        summary = f"Missing: {', '.join(missing_parts['ItemDescription'].unique()[:2])}"
         priority = 1
     elif not missing_payment.empty:
         status = "Pending Payment"
+        summary = "Waiting for Billing"
         priority = 2
     else:
         status = "Ready"
+        summary = "OK"
         priority = 3
+
+    # CRITICAL: We take the MAX of TotalSales for the group, 
+    # assuming TotalSales is an Order Header value repeated on lines.
+    order_val = group['TotalSales'].max()
 
     return pd.Series({
         'Customer': group['OwnerName'].iloc[0],
         'Branch': group['Branch'].iloc[0],
         'Manager': group['Manager'].iloc[0],
         'Infor_Status': group['SOStatus'].iloc[0],
-        'Total_Value': group['TotalSales'].sum(), # Sum value if multiple lines
+        'Quotation_Value': order_val, 
         'Calc_Status': status,
+        'Summary': summary,
         'Priority': priority
     })
 
-# --- SIDEBAR CONTROLS ---
+# --- MAIN APP ---
 with st.sidebar:
-    st.header("📂 Data Upload")
-    
-    # Mode Selector
-    app_mode = st.radio("Select Mode:", ["Daily Operations", "Monthly/Weekly Comparison"])
-    
-    st.divider()
-    
-    if app_mode == "Daily Operations":
-        file_current = st.file_uploader("Upload TODAY'S File", type=['csv', 'xls', 'xlsx'])
-        file_history = None
-    else:
-        st.info("Upload two files to compare changes over time.")
-        file_current = st.file_uploader("1. Upload NEW Report (End of Month)", type=['csv', 'xls', 'xlsx'])
-        file_history = st.file_uploader("2. Upload OLD Report (Start of Month)", type=['csv', 'xls', 'xlsx'])
+    st.header("📂 1. Upload Data")
+    uploaded_file = st.file_uploader("Upload Infor LN Report", type=['csv', 'xls', 'xlsx'])
 
-# --- MAIN LOGIC ---
-
-if file_current is not None:
+if uploaded_file is not None:
     try:
-        df_curr = load_data(file_current)
+        # Load Data
+        df = load_data(uploaded_file)
         
-        # --- MODE 1: DAILY OPS ---
-        if app_mode == "Daily Operations":
-            # (Keep the existing Daily Logic - simplified for brevity)
-            # Apply Filters
-            with st.sidebar:
-                st.header("🔍 Filters")
-                branches = ["ALL"] + sorted(df_curr['Branch'].astype(str).unique().tolist())
-                sel_branch = st.selectbox("Branch:", branches)
-                statuses = sorted(df_curr['SOStatus'].astype(str).unique().tolist())
-                sel_status = st.multiselect("Infor Status:", statuses, default=statuses)
+        # --- SIDEBAR FILTERS ---
+        with st.sidebar:
+            st.divider()
+            st.header("🔍 2. Filter Data")
+            
+            # Helper to get sorted unique lists
+            def get_options(col):
+                return sorted(df[col].astype(str).unique().tolist())
 
-            if sel_branch != "ALL": df_curr = df_curr[df_curr['Branch'].astype(str) == sel_branch]
-            if sel_status: df_curr = df_curr[df_curr['SOStatus'].isin(sel_status)]
+            # A. Branch Filter
+            sel_branch = st.multiselect("Branch", get_options('Branch'))
+            
+            # B. Manager Filter
+            sel_manager = st.multiselect("Manager", get_options('Manager'))
+            
+            # C. Infor Status Filter
+            sel_status = st.multiselect("Infor Status (e.g. Costed)", get_options('SOStatus'))
+            
+            # D. Customer Filter
+            # (Customers list can be huge, so we usually don't select all by default)
+            sel_customer = st.multiselect("Customer", get_options('OwnerName'))
 
-            if df_curr.empty:
-                st.warning("No data found.")
-            else:
-                summ_curr = df_curr.groupby('ServiceOrder').apply(classify_order_status).reset_index()
-                
-                # Metrics
-                waiting = len(summ_curr[summ_curr['Calc_Status'].str.contains("Waiting")])
-                ready = len(summ_curr[summ_curr['Calc_Status'].str.contains("Ready")])
-                
-                c1, c2 = st.columns(2)
-                c1.metric("🔴 Waiting for Parts", waiting)
-                c2.metric("✅ Ready for Service", ready)
-                
-                st.dataframe(summ_curr, hide_index=True, use_container_width=True)
+        # --- APPLY FILTERS ---
+        # We filter the RAW data first
+        if sel_branch:
+            df = df[df['Branch'].isin(sel_branch)]
+        if sel_manager:
+            df = df[df['Manager'].isin(sel_manager)]
+        if sel_status:
+            df = df[df['SOStatus'].isin(sel_status)]
+        if sel_customer:
+            df = df[df['OwnerName'].isin(sel_customer)]
 
-        # --- MODE 2: MONTHLY COMPARISON ---
-        elif app_mode == "Monthly/Weekly Comparison" and file_history is not None:
-            df_hist = load_data(file_history)
+        # Check if data remains
+        if df.empty:
+            st.warning("No data matches your filters.")
+        else:
+            # --- AGGREGATION ---
+            # Turn raw lines into "One Row Per Order"
+            summary_df = df.groupby('ServiceOrder').apply(classify_order_status).reset_index()
             
-            # Group by Order to get Status and Value
-            # We take the first row's status and the SUM of value for the order
-            curr_grp = df_curr.groupby('ServiceOrder').agg({
-                'SOStatus': 'first', 
-                'TotalSales': 'sum', # Quotation Value
-                'OwnerName': 'first'
-            }).reset_index()
+            # --- FINANCIAL METRICS ---
+            # Sum the 'Quotation_Value' of the UNIQUE orders
+            total_value = summary_df['Quotation_Value'].sum()
+            total_orders = len(summary_df)
             
-            hist_grp = df_hist.groupby('ServiceOrder').agg({
-                'SOStatus': 'first', 
-                'TotalSales': 'sum'
-            }).reset_index()
+            # Calculate breakdown
+            costed_val = summary_df[summary_df['Infor_Status'] == 'Costed']['Quotation_Value'].sum()
+            open_val = total_value - costed_val
             
-            # Merge
-            merged = curr_grp.merge(hist_grp, on='ServiceOrder', how='inner', suffixes=('_New', '_Old'))
+            # --- DISPLAY TOP METRICS ---
+            st.markdown("### 💵 Financial Summary (Filtered)")
+            col1, col2, col3, col4 = st.columns(4)
             
-            # Logic: Find Changes
-            changes = merged[merged['SOStatus_New'] != merged['SOStatus_Old']].copy()
-            
-            # Logic: Specifically "Changed to COSTED"
-            to_costed = changes[changes['SOStatus_New'].str.upper() == 'COSTED']
-            
-            # --- DISPLAY DASHBOARD ---
-            st.subheader("💰 Monthly Financial Impact")
-            
-            # Metrics Row
-            col1, col2, col3 = st.columns(3)
-            
-            # 1. Total Moved to Costed
-            count_costed = len(to_costed)
-            val_costed = to_costed['TotalSales_New'].sum()
-            
-            # 2. Total Status Changes
-            total_changes = len(changes)
-            
-            col1.metric("Orders Changed to 'Costed'", count_costed)
-            col2.metric("Total Value (Moved to Costed)", f"${val_costed:,.2f}")
-            col3.metric("Total Status Updates", total_changes)
+            col1.metric("Total Quotation Value", f"${total_value:,.2f}")
+            col2.metric("Total Orders", total_orders)
+            col3.metric("Value (Costed)", f"${costed_val:,.2f}")
+            col4.metric("Value (In Progress)", f"${open_val:,.2f}")
             
             st.divider()
+
+            # --- DISPLAY TABLE ---
+            st.subheader(f"📋 Order Details ({total_orders} orders)")
             
-            # Detailed Table for "To Costed"
-            st.write("### 💵 Orders that became 'Costed' this month")
-            if not to_costed.empty:
-                st.dataframe(
-                    to_costed[['ServiceOrder', 'OwnerName', 'SOStatus_Old', 'SOStatus_New', 'TotalSales_New']],
-                    column_config={
-                        "TotalSales_New": st.column_config.NumberColumn("Quotation Value", format="$%.2f"),
-                        "SOStatus_Old": "Previous Status",
-                        "SOStatus_New": "Current Status"
-                    },
-                    hide_index=True,
-                    use_container_width=True
-                )
-            else:
-                st.info("No orders moved to 'Costed' status in this comparison.")
-                
-            st.divider()
+            st.dataframe(
+                summary_df[['ServiceOrder', 'Customer', 'Infor_Status', 'Quotation_Value', 'Calc_Status', 'Manager', 'Branch']],
+                use_container_width=True,
+                column_config={
+                    "Quotation_Value": st.column_config.NumberColumn("Value", format="$%.2f"),
+                    "ServiceOrder": "Order ID",
+                    "Calc_Status": "Parts Status",
+                    "Infor_Status": "LN Status"
+                },
+                hide_index=True
+            )
             
-            # All Changes Summary
-            st.write("### 📋 All Status Changes")
-            if not changes.empty:
-                st.dataframe(
-                    changes[['ServiceOrder', 'OwnerName', 'SOStatus_Old', 'SOStatus_New', 'TotalSales_New']],
-                    column_config={
-                        "TotalSales_New": st.column_config.NumberColumn("Value", format="$%.2f")
-                    },
-                    hide_index=True,
-                    use_container_width=True
-                )
-            else:
-                st.success("No status changes detected between these two files.")
+            # --- EXPORT BUTTON ---
+            # Allow user to download the filtered result
+            csv = summary_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "📥 Download Filtered Result",
+                csv,
+                "filtered_financial_report.csv",
+                "text/csv"
+            )
 
     except Exception as e:
         st.error(f"Error: {e}")
+        st.write("Ensure your file has columns: TotalSales, ServiceOrder, OwnerName, etc.")
+
 else:
-    if app_mode == "Monthly/Weekly Comparison":
-        st.info("👈 Please upload BOTH files in the sidebar.")
-    else:
-        st.info("👈 Please upload a file to start.")
+    st.info("👈 Upload your file to start the dashboard.")
