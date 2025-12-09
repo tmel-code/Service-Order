@@ -73,86 +73,11 @@ def classify_order_status(group):
         priority = 3
 
     # CRITICAL: We take the MAX of TotalSales for the group
-    # Using 'first' or 'max' depending on data structure. Max is safer for 0s.
+    # Using 'max' is safer than 'sum' if the value repeats on every line
     order_val = group['TotalSales'].max()
 
     return pd.Series({
         'Customer': group['OwnerName'].iloc[0],
         'Branch': group['Branch'].iloc[0],
         'Manager': group['Manager'].iloc[0],
-        'Infor_Status': group['SOStatus'].iloc[0],
-        'Quotation_Value': order_val, 
-        'Calc_Status': status,
-        'Summary': summary,
-        'Priority': priority
-    })
-
-# --- SIDEBAR CONTROLS ---
-with st.sidebar:
-    st.header("1. Select Mode")
-    app_mode = st.radio("Choose View:", ["Daily Dashboard", "Period Comparison"])
-    
-    st.divider()
-    st.header("2. Upload Data")
-    
-    if app_mode == "Daily Dashboard":
-        file_current = st.file_uploader("Upload Current Report", type=['csv', 'xls', 'xlsx'])
-        file_history = None
-    else:
-        st.info("To compare, upload two files.")
-        file_current = st.file_uploader("Upload NEW Report (End of Period)", type=['csv', 'xls', 'xlsx'])
-        file_history = st.file_uploader("Upload OLD Report (Start of Period)", type=['csv', 'xls', 'xlsx'])
-
-# --- MAIN APP ---
-
-if file_current is not None:
-    try:
-        # Load Current Data
-        df = load_data(file_current)
-        
-        # --- COMMON FILTERS (Apply to both modes) ---
-        with st.sidebar:
-            st.divider()
-            st.header("3. Filter Data")
-            
-            def get_options(col):
-                # Handle possible mixed types (float/str) in filter columns
-                unique_vals = df[col].unique()
-                clean_vals = [str(x) for x in unique_vals if pd.notna(x)]
-                return sorted(clean_vals)
-
-            sel_branch = st.multiselect("Branch", get_options('Branch'))
-            sel_manager = st.multiselect("Manager", get_options('Manager'))
-            sel_status = st.multiselect("Infor Status", get_options('SOStatus'))
-            sel_customer = st.multiselect("Customer", get_options('OwnerName'))
-
-        # --- APPLY FILTERS ---
-        if sel_branch: df = df[df['Branch'].astype(str).isin(sel_branch)]
-        if sel_manager: df = df[df['Manager'].astype(str).isin(sel_manager)]
-        if sel_status: df = df[df['SOStatus'].astype(str).isin(sel_status)]
-        if sel_customer: df = df[df['OwnerName'].astype(str).isin(sel_customer)]
-
-        if df.empty:
-            st.warning("No data matches your filters.")
-        else:
-            # --- MODE 1: DAILY DASHBOARD ---
-            if app_mode == "Daily Dashboard":
-                
-                # Aggregate
-                summary_df = df.groupby('ServiceOrder').apply(classify_order_status).reset_index()
-                
-                # Financial Metrics
-                total_value = summary_df['Quotation_Value'].sum()
-                costed_val = summary_df[summary_df['Infor_Status'] == 'Costed']['Quotation_Value'].sum()
-                open_val = total_value - costed_val
-                
-                st.markdown("### 💵 Financial Snapshot")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Total Pipeline Value", f"${total_value:,.2f}")
-                c2.metric("Value (Costed)", f"${costed_val:,.2f}")
-                c3.metric("Value (In Progress)", f"${open_val:,.2f}")
-                
-                st.divider()
-                
-                # Operational Metrics
-                waiting = len(summary_
+        '
