@@ -1,113 +1,54 @@
 import streamlit as st
 import pandas as pd
+import traceback
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Service Order Tracker Pro", page_icon="📦", layout="wide")
+st.set_page_config(page_title="Debug Mode", layout="wide")
+st.title("🛠️ App Debugger")
 
-# --- CSS FOR STYLING ---
-st.markdown("""
-    <style>
-    .stAlert { padding: 10px; border-radius: 5px; }
-    .big-money { font-size: 24px; font-weight: bold; color: #28a745; }
-    </style>
-""", unsafe_allow_html=True)
+st.info("This mode will tell us exactly why the file is failing.")
 
-st.title("📦 Logistics & Financial Tracker Pro")
+uploaded_file = st.file_uploader("Upload your file", type=['csv', 'xls', 'xlsx'])
 
-# --- DATA PROCESSING ---
-@st.cache_data
-def load_data(uploaded_file):
-    if uploaded_file.name.endswith('.csv'):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
-    
-    # 1. Clean Key Columns
-    df = df.dropna(subset=['ServiceOrder'])
-    
-    # 2. Clean Financials
-    if 'TotalSales' in df.columns:
-        df['TotalSales'] = df['TotalSales'].astype(str).str.replace(r'[^\d.-]', '', regex=True)
-        df['TotalSales'] = pd.to_numeric(df['TotalSales'], errors='coerce').fillna(0)
-    else:
-        df['TotalSales'] = 0.0
-
-    # 3. Clean Quantities
-    for col in ['ReqQty', 'ActQty']:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        
-    return df
-
-def classify_order_status(group):
-    # Logic to determine if "Waiting" or "Ready"
-    group['Shortage'] = (group['ReqQty'] - group['ActQty']).clip(lower=0)
-    
-    def is_billing(desc):
-        d = str(desc).upper()
-        return any(x in d for x in ['BILLING', 'PAYMENT', 'DEPOSIT', 'FEE'])
-    group['Type'] = group['ItemDescription'].apply(lambda x: 'Billing' if is_billing(x) else 'Part')
-
-    missing_parts = group[(group['Type'] == 'Part') & (group['Shortage'] > 0)]
-    missing_payment = group[(group['Type'] == 'Billing') & (group['Shortage'] > 0)]
-
-    if not missing_parts.empty:
-        status = "Waiting for Parts"
-        summary = f"Missing: {', '.join(missing_parts['ItemDescription'].unique()[:2])}"
-        priority = 1
-    elif not missing_payment.empty:
-        status = "Pending Payment"
-        summary = "Waiting for Billing"
-        priority = 2
-    else:
-        status = "Ready"
-        summary = "OK"
-        priority = 3
-
-    # CRITICAL: We take the MAX of TotalSales for the group
-    order_val = group['TotalSales'].max()
-
-    return pd.Series({
-        'Customer': group['OwnerName'].iloc[0],
-        'Branch': group['Branch'].iloc[0],
-        'Manager': group['Manager'].iloc[0],
-        'Infor_Status': group['SOStatus'].iloc[0],
-        'Quotation_Value': order_val, 
-        'Calc_Status': status,
-        'Summary': summary,
-        'Priority': priority
-    })
-
-# --- SIDEBAR CONTROLS ---
-with st.sidebar:
-    st.header("1. Select Mode")
-    app_mode = st.radio("Choose View:", ["Daily Dashboard", "Period Comparison"])
-    
-    st.divider()
-    st.header("2. Upload Data")
-    
-    if app_mode == "Daily Dashboard":
-        file_current = st.file_uploader("Upload Current Report", type=['csv', 'xls', 'xlsx'])
-        file_history = None
-    else:
-        st.info("To compare, upload two files (e.g. This Month vs Last Month).")
-        file_current = st.file_uploader("Upload NEW Report (End of Period)", type=['csv', 'xls', 'xlsx'])
-        file_history = st.file_uploader("Upload OLD Report (Start of Period)", type=['csv', 'xls', 'xlsx'])
-
-# --- MAIN APP ---
-
-if file_current is not None:
+if uploaded_file is not None:
     try:
-        # Load Current Data
-        df = load_data(file_current)
+        st.write("1. Attempting to load file...")
         
-        # --- COMMON FILTERS (Apply to both modes) ---
-        with st.sidebar:
-            st.divider()
-            st.header("3. Filter Data")
-            
-            def get_options(col):
-                return sorted(df[col].astype(str).unique().tolist())
+        # Robust Loader
+        if uploaded_file.name.lower().endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+            st.success("✅ Loaded as CSV")
+        else:
+            # Try default first, then specific engines
+            try:
+                df = pd.read_excel(uploaded_file)
+                st.success("✅ Loaded as Excel (Auto-Engine)")
+            except Exception as e_default:
+                st.warning(f"Default excel engine failed: {e_default}")
+                st.write("Trying 'xlrd' engine for older Excel files...")
+                df = pd.read_excel(uploaded_file, engine='xlrd')
+                st.success("✅ Loaded as Excel (xlrd)")
 
-            sel_branch = st.multiselect("Branch", get_options('Branch'))
-            sel_manager = st.multiselect("Manager", get_options('Manager'))
-            sel
+        st.write(f"2. File has {len(df)} rows.")
+        st.write("3. Columns found:", df.columns.tolist())
+        
+        # Check for required columns
+        required = ['ServiceOrder', 'ReqQty', 'ActQty']
+        missing = [col for col in required if col not in df.columns]
+        
+        if missing:
+            st.error(f"❌ CRITICAL ERROR: The app cannot find these columns: {missing}")
+            st.write("Please check your Excel file header names.")
+        else:
+            st.success("✅ Critical columns found. Attempting math...")
+            
+            # Attempt Math
+            df['Shortage'] = (pd.to_numeric(df['ReqQty'], errors='coerce').fillna(0) - 
+                              pd.to_numeric(df['ActQty'], errors='coerce').fillna(0))
+            st.success("✅ Math calculations successful.")
+            
+            # Show preview
+            st.dataframe(df.head())
+
+    except Exception as e:
+        st.error("❌ A FATAL ERROR OCCURRED")
+        st.code(traceback.format_exc()) # This prints the exact error logic
