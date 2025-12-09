@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Service Order Financial Tracker", page_icon="💰", layout="wide")
+st.set_page_config(page_title="Service Order Tracker Pro", page_icon="📦", layout="wide")
 
 # --- CSS FOR STYLING ---
 st.markdown("""
@@ -12,7 +12,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💰 Logistics & Financial Tracker")
+st.title("📦 Logistics & Financial Tracker Pro")
 
 # --- DATA PROCESSING ---
 @st.cache_data
@@ -25,7 +25,7 @@ def load_data(uploaded_file):
     # 1. Clean Key Columns
     df = df.dropna(subset=['ServiceOrder'])
     
-    # 2. Clean Financials (Remove currency symbols, commas)
+    # 2. Clean Financials
     if 'TotalSales' in df.columns:
         df['TotalSales'] = df['TotalSales'].astype(str).str.replace(r'[^\d.-]', '', regex=True)
         df['TotalSales'] = pd.to_numeric(df['TotalSales'], errors='coerce').fillna(0)
@@ -63,8 +63,7 @@ def classify_order_status(group):
         summary = "OK"
         priority = 3
 
-    # CRITICAL: We take the MAX of TotalSales for the group, 
-    # assuming TotalSales is an Order Header value repeated on lines.
+    # CRITICAL: We take the MAX of TotalSales for the group
     order_val = group['TotalSales'].max()
 
     return pd.Series({
@@ -78,105 +77,37 @@ def classify_order_status(group):
         'Priority': priority
     })
 
-# --- MAIN APP ---
+# --- SIDEBAR CONTROLS ---
 with st.sidebar:
-    st.header("📂 1. Upload Data")
-    uploaded_file = st.file_uploader("Upload Infor LN Report", type=['csv', 'xls', 'xlsx'])
+    st.header("1. Select Mode")
+    app_mode = st.radio("Choose View:", ["Daily Dashboard", "Period Comparison"])
+    
+    st.divider()
+    st.header("2. Upload Data")
+    
+    if app_mode == "Daily Dashboard":
+        file_current = st.file_uploader("Upload Current Report", type=['csv', 'xls', 'xlsx'])
+        file_history = None
+    else:
+        st.info("To compare, upload two files (e.g. This Month vs Last Month).")
+        file_current = st.file_uploader("Upload NEW Report (End of Period)", type=['csv', 'xls', 'xlsx'])
+        file_history = st.file_uploader("Upload OLD Report (Start of Period)", type=['csv', 'xls', 'xlsx'])
 
-if uploaded_file is not None:
+# --- MAIN APP ---
+
+if file_current is not None:
     try:
-        # Load Data
-        df = load_data(uploaded_file)
+        # Load Current Data
+        df = load_data(file_current)
         
-        # --- SIDEBAR FILTERS ---
+        # --- COMMON FILTERS (Apply to both modes) ---
         with st.sidebar:
             st.divider()
-            st.header("🔍 2. Filter Data")
+            st.header("3. Filter Data")
             
-            # Helper to get sorted unique lists
             def get_options(col):
                 return sorted(df[col].astype(str).unique().tolist())
 
-            # A. Branch Filter
             sel_branch = st.multiselect("Branch", get_options('Branch'))
-            
-            # B. Manager Filter
             sel_manager = st.multiselect("Manager", get_options('Manager'))
-            
-            # C. Infor Status Filter
-            sel_status = st.multiselect("Infor Status (e.g. Costed)", get_options('SOStatus'))
-            
-            # D. Customer Filter
-            # (Customers list can be huge, so we usually don't select all by default)
-            sel_customer = st.multiselect("Customer", get_options('OwnerName'))
-
-        # --- APPLY FILTERS ---
-        # We filter the RAW data first
-        if sel_branch:
-            df = df[df['Branch'].isin(sel_branch)]
-        if sel_manager:
-            df = df[df['Manager'].isin(sel_manager)]
-        if sel_status:
-            df = df[df['SOStatus'].isin(sel_status)]
-        if sel_customer:
-            df = df[df['OwnerName'].isin(sel_customer)]
-
-        # Check if data remains
-        if df.empty:
-            st.warning("No data matches your filters.")
-        else:
-            # --- AGGREGATION ---
-            # Turn raw lines into "One Row Per Order"
-            summary_df = df.groupby('ServiceOrder').apply(classify_order_status).reset_index()
-            
-            # --- FINANCIAL METRICS ---
-            # Sum the 'Quotation_Value' of the UNIQUE orders
-            total_value = summary_df['Quotation_Value'].sum()
-            total_orders = len(summary_df)
-            
-            # Calculate breakdown
-            costed_val = summary_df[summary_df['Infor_Status'] == 'Costed']['Quotation_Value'].sum()
-            open_val = total_value - costed_val
-            
-            # --- DISPLAY TOP METRICS ---
-            st.markdown("### 💵 Financial Summary (Filtered)")
-            col1, col2, col3, col4 = st.columns(4)
-            
-            col1.metric("Total Quotation Value", f"${total_value:,.2f}")
-            col2.metric("Total Orders", total_orders)
-            col3.metric("Value (Costed)", f"${costed_val:,.2f}")
-            col4.metric("Value (In Progress)", f"${open_val:,.2f}")
-            
-            st.divider()
-
-            # --- DISPLAY TABLE ---
-            st.subheader(f"📋 Order Details ({total_orders} orders)")
-            
-            st.dataframe(
-                summary_df[['ServiceOrder', 'Customer', 'Infor_Status', 'Quotation_Value', 'Calc_Status', 'Manager', 'Branch']],
-                use_container_width=True,
-                column_config={
-                    "Quotation_Value": st.column_config.NumberColumn("Value", format="$%.2f"),
-                    "ServiceOrder": "Order ID",
-                    "Calc_Status": "Parts Status",
-                    "Infor_Status": "LN Status"
-                },
-                hide_index=True
-            )
-            
-            # --- EXPORT BUTTON ---
-            # Allow user to download the filtered result
-            csv = summary_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Download Filtered Result",
-                csv,
-                "filtered_financial_report.csv",
-                "text/csv"
-            )
-
-    except Exception as e:
-        st.error(f"Error: {e}")
-        st.write("Ensure your file has columns: TotalSales, ServiceOrder, OwnerName, etc.")
-
-else:
-    st.info("👈 Upload your file to start the dashboard.")
+            sel
