@@ -99,20 +99,21 @@ if file_curr is not None:
         with st.sidebar:
             st.divider()
             st.header("3. Filter Data")
-            
-            # The line below was causing errors, so I split it up
+            st.info("💡 Note: These filters remove data BEFORE comparison.")
             def get_opts(col):
-                unique_vals = df[col].unique()
-                # Clean list comprehension
-                clean_list = [str(x) for x in unique_vals if pd.notna(x)]
-                return sorted(clean_list)
+                vals = df[col].unique()
+                return sorted([str(x) for x in vals if pd.notna(x)])
 
             sel_branch = st.multiselect("Branch", get_opts('Branch'))
             sel_mgr = st.multiselect("Manager", get_opts('Manager'))
-            sel_stat = st.multiselect("Infor Status", get_opts('SOStatus'))
+            # Removed Status filter from Sidebar in Comparison Mode to avoid confusion
+            if app_mode == "Daily Dashboard":
+                sel_stat = st.multiselect("Infor Status", get_opts('SOStatus'))
+            else:
+                sel_stat = [] # Don't filter status early in comparison mode
             sel_cust = st.multiselect("Customer", get_opts('OwnerName'))
 
-        # Apply Filters
+        # Apply Global Filters
         if sel_branch: df = df[df['Branch'].astype(str).isin(sel_branch)]
         if sel_mgr: df = df[df['Manager'].astype(str).isin(sel_mgr)]
         if sel_stat: df = df[df['SOStatus'].astype(str).isin(sel_stat)]
@@ -161,22 +162,31 @@ if file_curr is not None:
                 
                 merged = curr_agg.merge(hist_agg, on='ServiceOrder', how='inner', suffixes=('_New', '_Old'))
                 changes = merged[merged['SOStatus_New'] != merged['SOStatus_Old']].copy()
-                to_costed = changes[changes['SOStatus_New'].str.upper() == 'COSTED']
                 
                 st.subheader("📊 Comparison Report")
-                m1, m2 = st.columns(2)
-                m1.metric("Status Changes", len(changes))
-                m2.metric("Value to Costed", f"${to_costed['TotalSales_New'].sum():,.2f}")
                 
-                if not changes.empty:
-                    st.dataframe(changes[['ServiceOrder', 'OwnerName', 'SOStatus_Old', 'SOStatus_New', 'TotalSales_New']], use_container_width=True)
-                else:
-                    st.success("No changes found.")
+                # --- NEW: COMPARISON FILTERS ---
+                with st.expander("🔎 Comparison Filters (From/To Status)", expanded=True):
+                    c_col1, c_col2 = st.columns(2)
+                    
+                    # Get unique statuses found in the changes
+                    all_old_stats = sorted(changes['SOStatus_Old'].astype(str).unique())
+                    all_new_stats = sorted(changes['SOStatus_New'].astype(str).unique())
+                    
+                    filter_from = c_col1.multiselect("Show Orders Changed FROM:", all_old_stats)
+                    filter_to = c_col2.multiselect("Show Orders Changed TO:", all_new_stats)
+                
+                # Apply Comparison Filters
+                if filter_from:
+                    changes = changes[changes['SOStatus_Old'].isin(filter_from)]
+                if filter_to:
+                    changes = changes[changes['SOStatus_New'].isin(filter_to)]
 
-    except Exception as e:
-        st.error(f"Error: {e}")
-else:
-    if app_mode == "Period Comparison":
-        st.info("👈 Upload BOTH files.")
-    else:
-        st.info("👈 Upload file.")
+                # Metrics
+                to_costed_val = changes[changes['SOStatus_New'].str.upper() == 'COSTED']['TotalSales_New'].sum()
+                
+                m1, m2 = st.columns(2)
+                m1.metric("Orders Matching Filter", len(changes))
+                m2.metric("Value (Moved to Costed)", f"${to_costed_val:,.2f}")
+                
+                if
