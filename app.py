@@ -4,7 +4,6 @@ import pandas as pd
 st.set_page_config(layout="wide")
 st.title("📦 Logistics Tracker")
 
-@st.cache_data
 def load(file):
     if file.name.lower().endswith('.csv'):
         df = pd.read_csv(file)
@@ -13,38 +12,29 @@ def load(file):
             df = pd.read_excel(file)
         except:
             df = pd.read_excel(file, engine='xlrd')
-
+            
     df = df.dropna(subset=['ServiceOrder'])
-    
-    # Numeric Cleanup
-    for c in ['ReqQty', 'ActQty', 'TotalSales']:
+    cols = ['ReqQty', 'ActQty', 'TotalSales']
+    for c in cols:
         if c not in df.columns:
             df[c] = 0.0
-        
-        # Convert safely
         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
     return df
-    def process(grp):
-    # Calculate Shortage
-    r = grp['ReqQty']
-    a = grp['ActQty']
-    short = (r - a).clip(lower=0)
-    
-    # Check Billing
-    def check(t):
-        x = str(t).upper()
-        return 'BILLING' in x or 'PAYMENT' in x
 
-    desc = grp['ItemDescription']
-    is_bill = desc.apply(check)
+def process(grp):
+    req = grp['ReqQty']
+    act = grp['ActQty']
+    short = (req - act).clip(lower=0)
     
-    # Status Logic
-    m1 = (~is_bill) & (short > 0)
-    m2 = (is_bill) & (short > 0)
+    desc = grp['ItemDescription'].astype(str).str.upper()
+    is_bill = desc.str.contains('BILLING|PAYMENT|DEPOSIT')
     
-    if m1.any():
+    m_part = (~is_bill) & (short > 0)
+    m_bill = (is_bill) & (short > 0)
+    
+    if m_part.any():
         s = "Waiting for Parts"
-    elif m2.any():
+    elif m_bill.any():
         s = "Pending Payment"
     else:
         s = "Ready"
@@ -57,15 +47,16 @@ def load(file):
         'Value': grp['TotalSales'].max(),
         'Calc_Status': s
     })
-    # --- MAIN APP ---
+
+# --- MAIN APP ---
 mode = st.radio("Mode", ["Daily", "Compare"])
 
 if mode == "Daily":
-    f1 = st.file_uploader("Current", key="u1")
+    f1 = st.file_uploader("Current File", key="u1")
     f2 = None
 else:
-    f1 = st.file_uploader("New", key="u2")
-    f2 = st.file_uploader("Old", key="u3")
+    f1 = st.file_uploader("New File", key="u2")
+    f2 = st.file_uploader("Old File", key="u3")
 
 if f1:
     try:
@@ -74,13 +65,9 @@ if f1:
         # Filters
         with st.sidebar:
             st.header("Filters")
-            def opts(c):
-                u = df[c].unique()
-                return sorted([str(x) for x in u])
-
-            br = st.multiselect("Branch", opts('Branch'))
-            mg = st.multiselect("Manager", opts('Manager'))
-            cu = st.multiselect("Customer", opts('OwnerName'))
+            br = st.multiselect("Branch", df['Branch'].unique())
+            mg = st.multiselect("Manager", df['Manager'].unique())
+            cu = st.multiselect("Customer", df['OwnerName'].unique())
 
         if br: df = df[df['Branch'].isin(br)]
         if mg: df = df[df['Manager'].isin(mg)]
@@ -90,18 +77,16 @@ if f1:
             st.warning("No data.")
         else:
             if mode == "Daily":
-                gb = df.groupby('ServiceOrder')
-                res = gb.apply(process).reset_index()
+                res = df.groupby('ServiceOrder').apply(process).reset_index()
                 
                 tot = res['Value'].sum()
-                msk = res['Status'] == 'Costed'
-                vc = res[msk]['Value'].sum()
-                vo = tot - vc
+                costed = res[res['Status']=='Costed']['Value'].sum()
                 
-                c1, c2, c3 = st.columns(3)
+                c1,c2,c3 = st.columns(3)
                 c1.metric("Total", f"${tot:,.0f}")
-                c2.metric("Costed", f"${vc:,.0f}")
-                c3.metric("Open", f"${vo:,.0f}")
+                c2.metric("Costed", f"${costed:,.0f}")
+                c3.metric("Open", f"${(tot-costed):,.0f}")
+                
                 st.dataframe(res, hide_index=True)
 
             elif mode == "Compare":
@@ -109,34 +94,28 @@ if f1:
                     df_old = load(f2)
                     g1 = df.groupby('ServiceOrder')
                     n = g1.agg({'SOStatus':'first','TotalSales':'max'}).reset_index()
+                    
                     g2 = df_old.groupby('ServiceOrder')
                     o = g2.agg({'SOStatus':'first','TotalSales':'max'}).reset_index()
                     
                     m = n.merge(o, on='ServiceOrder', suffixes=('_N','_O'))
-                    msk = m['SOStatus_N'] != m['SOStatus_O']
-                    chg = m[msk].copy()
+                    chg = m[m['SOStatus_N'] != m['SOStatus_O']].copy()
                     
                     st.subheader("Changes")
-                    with st.expander("Filter"):
-                        k1, k2 = st.columns(2)
-                        frm = k1.multiselect("From", chg['SOStatus_O'].unique())
-                        to = k2.multiselect("To", chg['SOStatus_N'].unique())
-                        
-                    if frm: chg = chg[chg['SOStatus_O'].isin(frm)]
-                    if to: chg = chg[chg['SOStatus_N'].isin(to)]
-                        
-                    cnt = len(chg)
-                    v = 0
-                    if not chg.empty:
-                        msk = chg['SOStatus_N'].str.upper() == 'COSTED'
-                        v = chg[msk]['TotalSales_N'].sum()
-                        
-                    z1, z2 = st.columns(2)
-                    z1.metric("Count", cnt)
-                    z2.metric("To Costed", f"${v:,.0f}")
+                    f_fr = st.multiselect("From", chg['SOStatus_O'].unique())
+                    f_to = st.multiselect("To", chg['SOStatus_N'].unique())
                     
-                    if not chg.empty: st.dataframe(chg, hide_index=True)
-                    else: st.info("No changes.")
+                    if f_fr: chg = chg[chg['SOStatus_O'].isin(f_fr)]
+                    if f_to: chg = chg[chg['SOStatus_N'].isin(f_to)]
+                    
+                    cnt = len(chg)
+                    val = chg[chg['SOStatus_N']=='Costed']['TotalSales_N'].sum()
+                    
+                    c1,c2 = st.columns(2)
+                    c1.metric("Count", cnt)
+                    c2.metric("To Costed", f"${val:,.0f}")
+                    
+                    st.dataframe(chg, hide_index=True)
                 else:
                     st.info("Upload Old File.")
 
