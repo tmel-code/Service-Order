@@ -5,6 +5,7 @@ st.set_page_config(layout="wide")
 st.title("📦 Logistics Tracker")
 
 def load(file):
+    # Determine file type
     if file.name.lower().endswith('.csv'):
         df = pd.read_csv(file)
     else:
@@ -13,15 +14,18 @@ def load(file):
         except:
             df = pd.read_excel(file, engine='xlrd')
             
+    # Basic cleanup
     df = df.dropna(subset=['ServiceOrder'])
     cols = ['ReqQty', 'ActQty', 'TotalSales']
     for c in cols:
         if c not in df.columns:
             df[c] = 0.0
+        # Convert to numeric, forcing errors to NaN then 0
         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
     return df
 
 def process(grp):
+    # Logic for row status
     req = grp['ReqQty']
     act = grp['ActQty']
     short = (req - act).clip(lower=0)
@@ -48,7 +52,7 @@ def process(grp):
         'Calc_Status': s
     })
 
-# --- SIDEBAR ---
+# --- SIDEBAR: SETUP ---
 with st.sidebar:
     st.header("1. Setup")
     mode = st.radio("Mode", ["Daily", "Compare"])
@@ -61,64 +65,19 @@ with st.sidebar:
         f1 = st.file_uploader("New File (End)", key="u2")
         f2 = st.file_uploader("Old File (Start)", key="u3")
 
-# --- MAIN APP ---
+# --- MAIN APP LOGIC ---
 if f1:
     try:
         df = load(f1)
         
-        # GLOBAL FILTERS
+        # --- SIDEBAR: FILTERS ---
         with st.sidebar:
             st.divider()
             st.header("2. Filters")
             
-            # Helper to get clean list
-            def get_opts(col):
-                u = df[col].unique()
+            # Helper to get sorted unique options
+            def opts(c):
+                u = df[c].unique()
                 return sorted([str(x) for x in u])
 
-            br = st.multiselect("Branch", get_opts('Branch'))
-            mg = st.multiselect("Manager", get_opts('Manager'))
-            
-            # STATUS FILTER (Daily Mode Only)
-            st_fil = []
-            if mode == "Daily":
-                st_fil = st.multiselect("Infor Status", get_opts('SOStatus'))
-            
-            cu = st.multiselect("Customer", get_opts('OwnerName'))
-
-        # Apply Filters
-        if br: df = df[df['Branch'].isin(br)]
-        if mg: df = df[df['Manager'].isin(mg)]
-        if st_fil: df = df[df['SOStatus'].isin(st_fil)]
-        if cu: df = df[df['OwnerName'].isin(cu)]
-
-        if df.empty:
-            st.warning("No data.")
-        else:
-            # --- DAILY VIEW ---
-            if mode == "Daily":
-                res = df.groupby('ServiceOrder').apply(process).reset_index()
-                
-                tot = res['Value'].sum()
-                costed = res[res['Status']=='Costed']['Value'].sum()
-                
-                c1,c2,c3 = st.columns(3)
-                c1.metric("Total", f"${tot:,.0f}")
-                c2.metric("Costed", f"${costed:,.0f}")
-                c3.metric("Open", f"${(tot-costed):,.0f}")
-                
-                st.dataframe(res, hide_index=True)
-
-            # --- COMPARE VIEW ---
-            elif mode == "Compare":
-                if f2:
-                    df_old = load(f2)
-                    
-                    # Grouping
-                    g1 = df.groupby('ServiceOrder')
-                    n = g1.agg({'SOStatus':'first','TotalSales':'max'}).reset_index()
-                    
-                    g2 = df_old.groupby('ServiceOrder')
-                   o = g2.agg({'SOStatus':'first','TotalSales':'max'}).reset_index()
-except Exception as e:
-    st.error(f"An error occurred: {e}") # Or print(e)
+            br = st.multiselect("Branch
