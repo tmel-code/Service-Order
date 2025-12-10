@@ -1,87 +1,113 @@
 import streamlit as st
 import pandas as pd
 
-# 1. Config
 st.set_page_config(layout="wide")
 st.title("📦 Logistics Tracker")
 
-# 2. Loader
+# --- 1. LOAD DATA ---
 @st.cache_data
-def load_data(file):
-    # Check Type
-    n = file.name.lower()
-    if n.endswith('.csv'):
+def load(file):
+    if file.name.lower().endswith('.csv'):
         df = pd.read_csv(file)
     else:
         try:
             df = pd.read_excel(file)
         except:
-            df = pd.read_excel(
-                file,
-                engine='xlrd'
-            )
+            df = pd.read_excel(file, engine='xlrd')
 
-    # Drop Empty
-    df = df.dropna(
-        subset=['ServiceOrder']
-    )
+    df = df.dropna(subset=['ServiceOrder'])
 
-    # Clean Columns
-    targets = [
-        'ReqQty',
-        'ActQty',
-        'TotalSales'
-    ]
-    
-    for c in targets:
-        # Create if missing
+    for c in ['ReqQty', 'ActQty', 'TotalSales']:
         if c not in df.columns:
             df[c] = 0.0
         
-        # String Clean
         if df[c].dtype == 'object':
             s = df[c].astype(str)
-            # Regex
-            pat = r'[^\d.-]'
-            s = s.str.replace(
-                pat,
-                '',
-                regex=True
-            )
-            # Convert
-            df[c] = pd.to_numeric(
-                s,
-                errors='coerce'
-            )
+            s = s.str.replace(r'[^\d.-]','',regex=True)
+            df[c] = pd.to_numeric(s, errors='coerce')
         else:
-            # Force convert
-            df[c] = pd.to_numeric(
-                df[c],
-                errors='coerce'
-            )
-            
-        # Fill NaN
-        df[c] = df[c].fillna(0)
+            df[c] = pd.to_numeric(df[c], errors='coerce')
         
+        df[c] = df[c].fillna(0)
     return df
 
-# 3. Logic
-def classify(grp):
-    # Math
-    r = grp['ReqQty']
-    a = grp['ActQty']
-    diff = r - a
-    short = diff.clip(lower=0)
+# --- 2. LOGIC ---
+def process_row(grp):
+    req = grp['ReqQty']
+    act = grp['ActQty']
+    short = (req - act).clip(lower=0)
     
-    # Billing Check
-    def check(x):
-        t = str(x).upper()
-        # Keywords
-        k1 = 'BILLING'
-        k2 = 'PAYMENT'
-        k3 = 'DEPOSIT'
-        return k1 in t or k2 in t or k3 in t
+    def check_bill(t):
+        txt = str(t).upper()
+        return 'BILLING' in txt or 'PAYMENT' in txt
 
-    # Apply Check
-    desc = grp['ItemDescription']
-    is_bill = desc.apply(check)
+    is_bill = grp['ItemDescription'].apply(check_bill)
+    
+    m_part = (~is_bill) & (short > 0)
+    m_bill = (is_bill) & (short > 0)
+    
+    if m_part.any():
+        s = "Waiting for Parts"
+    elif m_bill.any():
+        s = "Pending Payment"
+    else:
+        s = "Ready"
+
+    return pd.Series({
+        'Customer': grp['OwnerName'].iloc[0],
+        'Branch': grp['Branch'].iloc[0],
+        'Manager': grp['Manager'].iloc[0],
+        'Status': grp['SOStatus'].iloc[0],
+        'Value': grp['TotalSales'].max(),
+        'Calc_Status': s
+    })
+
+# --- 3. MAIN UI ---
+st.write("### 1. Setup")
+mode = st.radio("Mode:", ["Daily", "Compare"], horizontal=True)
+
+if mode == "Daily":
+    f1 = st.file_uploader("Upload Current File", key="u1")
+    f2 = None
+else:
+    c1, c2 = st.columns(2)
+    f1 = c1.file_uploader("New File (End)", key="u2")
+    f2 = c2.file_uploader("Old File (Start)", key="u3")
+
+if f1:
+    try:
+        df = load(f1)
+        
+        # FILTERS (On Left)
+        with st.sidebar:
+            st.header("Filters")
+            def get_opt(c):
+                u = df[c].unique()
+                return sorted([str(x) for x in u if pd.notna(x)])
+
+            br = st.multiselect("Branch", get_opt('Branch'))
+            mg = st.multiselect("Manager", get_opt('Manager'))
+            cu = st.multiselect("Customer", get_opt('OwnerName'))
+
+        if br: df = df[df['Branch'].astype(str).isin(br)]
+        if mg: df = df[df['Manager'].astype(str).isin(mg)]
+        if cu: df = df[df['OwnerName'].astype(str).isin(cu)]
+
+        if df.empty:
+            st.warning("No data found.")
+        else:
+            # --- DAILY VIEW ---
+            if mode == "Daily":
+                gb = df.groupby('ServiceOrder')
+                res = gb.apply(process_row).reset_index()
+                
+                tot = res['Value'].sum()
+                
+                msk = res['Status'] == 'Costed'
+                vc = res[msk]['Value'].sum()
+                vo = tot - vc
+                
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Total", f"${tot:,.0f}")
+                k2.metric("Costed", f"${vc:,.0f}")
+                k3.metric("Open", f"${vo:,.0
