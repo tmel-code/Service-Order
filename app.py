@@ -48,34 +48,54 @@ def process(grp):
         'Calc_Status': s
     })
 
+# --- SIDEBAR ---
+with st.sidebar:
+    st.header("1. Setup")
+    mode = st.radio("Mode", ["Daily", "Compare"])
+    st.divider()
+    
+    if mode == "Daily":
+        f1 = st.file_uploader("Current File", key="u1")
+        f2 = None
+    else:
+        f1 = st.file_uploader("New File (End)", key="u2")
+        f2 = st.file_uploader("Old File (Start)", key="u3")
+
 # --- MAIN APP ---
-mode = st.radio("Mode", ["Daily", "Compare"])
-
-if mode == "Daily":
-    f1 = st.file_uploader("Current File", key="u1")
-    f2 = None
-else:
-    f1 = st.file_uploader("New File", key="u2")
-    f2 = st.file_uploader("Old File", key="u3")
-
 if f1:
     try:
         df = load(f1)
         
-        # Filters
+        # GLOBAL FILTERS
         with st.sidebar:
-            st.header("Filters")
-            br = st.multiselect("Branch", df['Branch'].unique())
-            mg = st.multiselect("Manager", df['Manager'].unique())
-            cu = st.multiselect("Customer", df['OwnerName'].unique())
+            st.divider()
+            st.header("2. Filters")
+            
+            # Helper to get clean list
+            def get_opts(col):
+                u = df[col].unique()
+                return sorted([str(x) for x in u])
 
+            br = st.multiselect("Branch", get_opts('Branch'))
+            mg = st.multiselect("Manager", get_opts('Manager'))
+            
+            # STATUS FILTER (Daily Mode Only)
+            st_fil = []
+            if mode == "Daily":
+                st_fil = st.multiselect("Infor Status", get_opts('SOStatus'))
+            
+            cu = st.multiselect("Customer", get_opts('OwnerName'))
+
+        # Apply Filters
         if br: df = df[df['Branch'].isin(br)]
         if mg: df = df[df['Manager'].isin(mg)]
+        if st_fil: df = df[df['SOStatus'].isin(st_fil)]
         if cu: df = df[df['OwnerName'].isin(cu)]
 
         if df.empty:
             st.warning("No data.")
         else:
+            # --- DAILY VIEW ---
             if mode == "Daily":
                 res = df.groupby('ServiceOrder').apply(process).reset_index()
                 
@@ -89,35 +109,14 @@ if f1:
                 
                 st.dataframe(res, hide_index=True)
 
+            # --- COMPARE VIEW ---
             elif mode == "Compare":
                 if f2:
                     df_old = load(f2)
+                    
+                    # Grouping
                     g1 = df.groupby('ServiceOrder')
                     n = g1.agg({'SOStatus':'first','TotalSales':'max'}).reset_index()
                     
                     g2 = df_old.groupby('ServiceOrder')
                     o = g2.agg({'SOStatus':'first','TotalSales':'max'}).reset_index()
-                    
-                    m = n.merge(o, on='ServiceOrder', suffixes=('_N','_O'))
-                    chg = m[m['SOStatus_N'] != m['SOStatus_O']].copy()
-                    
-                    st.subheader("Changes")
-                    f_fr = st.multiselect("From", chg['SOStatus_O'].unique())
-                    f_to = st.multiselect("To", chg['SOStatus_N'].unique())
-                    
-                    if f_fr: chg = chg[chg['SOStatus_O'].isin(f_fr)]
-                    if f_to: chg = chg[chg['SOStatus_N'].isin(f_to)]
-                    
-                    cnt = len(chg)
-                    val = chg[chg['SOStatus_N']=='Costed']['TotalSales_N'].sum()
-                    
-                    c1,c2 = st.columns(2)
-                    c1.metric("Count", cnt)
-                    c2.metric("To Costed", f"${val:,.0f}")
-                    
-                    st.dataframe(chg, hide_index=True)
-                else:
-                    st.info("Upload Old File.")
-
-    except Exception as e:
-        st.error(f"Error: {e}")
