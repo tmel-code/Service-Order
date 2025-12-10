@@ -15,7 +15,6 @@ st.title("📦 Logistics & Financial Tracker Pro")
 # --- DATA LOADING ---
 @st.cache_data
 def load_data(uploaded_file):
-    # 1. Determine Engine
     if uploaded_file.name.lower().endswith('.csv'):
         df = pd.read_csv(uploaded_file)
     else:
@@ -24,14 +23,13 @@ def load_data(uploaded_file):
         except:
             df = pd.read_excel(uploaded_file, engine='xlrd')
     
-    # 2. Cleanup
     df = df.dropna(subset=['ServiceOrder'])
     
-    # 3. Numeric Cleaning
     cols = ['ReqQty', 'ActQty', 'TotalSales']
     for col in cols:
         if col in df.columns:
             if df[col].dtype == 'object':
+                # Split regex to be safe
                 df[col] = df[col].astype(str).str.replace(r'[^\d.-]', '', regex=True)
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         else:
@@ -43,7 +41,8 @@ def classify_order_status(group):
     group['Shortage'] = (group['ReqQty'] - group['ActQty']).clip(lower=0)
     
     def is_billing(desc):
-        return any(x in str(desc).upper() for x in ['BILLING', 'PAYMENT', 'DEPOSIT', 'FEE'])
+        keywords = ['BILLING', 'PAYMENT', 'DEPOSIT', 'FEE']
+        return any(x in str(desc).upper() for x in keywords)
     
     group['Type'] = group['ItemDescription'].apply(lambda x: 'Billing' if is_billing(x) else 'Part')
 
@@ -67,21 +66,4 @@ def classify_order_status(group):
     return pd.Series({
         'Customer': group['OwnerName'].iloc[0],
         'Branch': group['Branch'].iloc[0],
-        'Manager': group['Manager'].iloc[0],
-        'Infor_Status': group['SOStatus'].iloc[0],
-        'Quotation_Value': group['TotalSales'].max(), 
-        'Calc_Status': status,
-        'Summary': summary,
-        'Priority': priority
-    })
-
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("1. Select Mode")
-    app_mode = st.radio("View:", ["Daily Dashboard", "Period Comparison"])
-    
-    st.divider()
-    st.header("2. Upload Data")
-    
-    if app_mode == "Daily Dashboard":
-        file_curr = st.file_uploader("Upload Current Report
+        'Manager': group
