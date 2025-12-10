@@ -119,4 +119,6 @@ if f1:
                     n = g1.agg({'SOStatus':'first','TotalSales':'max'}).reset_index()
                     
                     g2 = df_old.groupby('ServiceOrder')
-                    o = g2.agg({'SOStatus':'first','TotalSales':'max'}).reset_index()
+                   o = g2.agg({'SOStatus':'first','TotalSales':'max'}).reset_index()
+except Exception as e:
+    st.error(f"An error occurred: {e}") # Or print(e)
